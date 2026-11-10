@@ -1,0 +1,103 @@
+{
+  "dev-backend": {
+    "label": "Backend",
+    "environment": "DEV",
+    "hostname": "netwinusa-dev-evl-core",
+    "address": "10.112.100.140",
+    "user": "padmin",
+    "description": "ASF · JBoss · MongoDB · ZooKeeper · Nginx",
+    "services": [
+      "netwin_backend.service",
+      "netwin-jboss.service",
+      "mongod.service",
+      "zookeeper.service",
+      "nginx.service",
+      "nginx-prometheus-exporter.service"
+    ],
+    "metrics": {
+      "jboss": 8890,
+      "jvm2": 8891,
+      "nginx": 9113
+    },
+    "forwards": {
+      "jboss-debug": {
+        "label": "JBoss · Debug IntelliJ",
+        "localPort": 18787,
+        "remotePort": 8787,
+        "kind": "debug",
+        "note": "Remote JVM Debug → Attach → localhost:18787. Breakpoints podem suspender threads no DEV compartilhado."
+      },
+      "jboss-metrics": {
+        "label": "JBoss · Métricas",
+        "localPort": 18890,
+        "remotePort": 8890,
+        "kind": "http",
+        "path": "/metrics"
+      },
+      "jvm2-metrics": {
+        "label": "JVM 8891 · Métricas",
+        "localPort": 18891,
+        "remotePort": 8891,
+        "kind": "http",
+        "path": "/metrics"
+      },
+      "nginx-metrics": {
+        "label": "Nginx · Exportador",
+        "localPort": 19113,
+        "remotePort": 9113,
+        "kind": "http",
+        "path": "/metrics"
+      },
+      "nginx-status": {
+        "label": "Nginx · Status",
+        "localPort": 13080,
+        "remotePort": 3080,
+        "kind": "http",
+        "path": "/nginx_status"
+      }
+    }
+  },
+  "dev-frontend": {
+    "label": "Frontend",
+    "environment": "DEV",
+    "hostname": "netwinusa-dev-evl-web",
+    "address": "10.112.100.141",
+    "user": "padmin",
+    "description": "Frontend · Tomcat · Nginx · stunnel · descoberta de serviços por SSH",
+    "services": [],
+    "metrics": {},
+    "discoverServices": true
+  },
+  "dev-geoserver": {
+    "label": "GeoServer",
+    "environment": "DEV",
+    "hostname": "netwinusa-dev-evl-geoserver",
+    "address": "10.112.100.139",
+    "user": "padmin",
+    "description": "GeoServer · instâncias Tomcat · Ansible · descoberta de serviços por SSH",
+    "services": [],
+    "metrics": {},
+    "discoverServices": true
+  },
+  "dev-database": {
+    "label": "Oracle",
+    "environment": "DEV",
+    "hostname": "netwinusa-dev-evl-bd19",
+    "address": "10.112.100.170",
+    "user": "padmin",
+    "description": "Inventário documentado · autenticação SO própria",
+    "services": [],
+    "metrics": {}
+  },
+  "dev-docmanager": {
+    "label": "Docmanager",
+    "environment": "DEV",
+    "hostname": "Docmanager",
+    "address": "10.112.83.185",
+    "user": "padmin",
+    "description": "Docmanager · descoberta de serviços por SSH",
+    "services": [],
+    "metrics": {},
+    "discoverServices": true
+  }
+}
