@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import secrets
+import select
 import re
 import shlex
 import subprocess
@@ -20,6 +21,7 @@ HOSTS = json.loads((ROOT / 'hosts.json').read_text())
 TOKEN = secrets.token_urlsafe(32)
 PORT = 8765
 LOCK = threading.BoundedSemaphore(8)
+STREAM_LOCK = threading.BoundedSemaphore(4)
 SSH_DIR = Path('/tmp') / f'nwo-{os.getuid()}'
 
 def ssh_args(host):
@@ -112,7 +114,7 @@ def metrics(host, name):
 def logs(host, unit):
     if unit not in service_names(host):
         raise ValueError('Serviço não permitido.')
-    command = f'journalctl -u {shlex.quote(unit)} -n 150 --since "30 minutes ago" --no-pager -o short-iso 2>&1'
+    command = f'sudo -n /usr/bin/journalctl -u {shlex.quote(unit)} -n 150 --since=-30min --no-pager -o short-iso'
     return dict(at=now(), text=remote(host, command))
 
 # Forwarding is owned by this app and attached to an existing authenticated SSH master.
@@ -217,6 +219,63 @@ class Handler(http.server.BaseHTTPRequestHandler):
         except Exception as e:
             return self.reply(502, {'error': str(e)})
 
+    def stream_logs(self, host, unit):
+        if unit not in service_names(host):
+            raise ValueError('Serviço não permitido.')
+        if not STREAM_LOCK.acquire(blocking=False):
+            return self.reply(503, {'error': 'Limite de quatro acompanhamentos simultâneos atingido.'})
+        process = None
+        started = False
+        try:
+            command = f'sudo -n /usr/bin/journalctl -u {shlex.quote(unit)} -n 150 --since=-30min --no-pager -o short-iso --follow'
+            process = subprocess.Popen(ssh_args(host) + [command], stdout=subprocess.PIPE,
+                                       stderr=subprocess.STDOUT)
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/x-ndjson; charset=utf-8')
+            self.send_header('Cache-Control', 'no-store')
+            self.send_header('X-Content-Type-Options', 'nosniff')
+            self.end_headers()
+            started = True
+            def send(data):
+                self.wfile.write((json.dumps(data, ensure_ascii=False) + '\n').encode())
+                self.wfile.flush()
+            import codecs
+            decoder = codecs.getincrementaldecoder('utf-8')(errors='replace')
+            while True:
+                ready, _, _ = select.select([process.stdout], [], [], 1)
+                if ready:
+                    chunk = os.read(process.stdout.fileno(), 8192)
+                    if not chunk:
+                        tail = decoder.decode(b'', final=True)
+                        if tail:
+                            send({'text': tail})
+                        code = process.wait(timeout=5)
+                        send({'error': f'Acompanhamento encerrado (código {code}). Verifique as mensagens acima e a conexão SSH.'})
+                        break
+                    send({'text': decoder.decode(chunk)})
+                else:
+                    send({'heartbeat': True})
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        except Exception as error:
+            if not started:
+                raise
+            try:
+                send({'error': str(error)})
+            except OSError:
+                pass
+        finally:
+            if process is not None:
+                if process.poll() is None:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=3)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait()
+                process.stdout.close()
+            STREAM_LOCK.release()
+
     def do_GET(self):
         if self.headers.get('Host') not in (f'127.0.0.1:{PORT}', f'localhost:{PORT}'):
             return self.reply(403, {'error': 'Host não permitido.'})
@@ -244,6 +303,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     result = metrics(host, name)
                 elif action == 'tunnels':
                     result = tunnel_list(parts[1])
+                elif action == 'logs-stream':
+                    return self.stream_logs(host, query.get('unit', [''])[0])
                 elif action == 'logs':
                     result = logs(host, query.get('unit', [''])[0])
                 else:
@@ -267,6 +328,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
     PORT = args.port
     server = http.server.ThreadingHTTPServer(('127.0.0.1', PORT), Handler)
+    server.daemon_threads = True
     print(f'NETWIN Observer — somente consulta\nAbra: http://127.0.0.1:{PORT}/#token={TOKEN}', flush=True)
     print('Ctrl+C para encerrar. Autenticação SSH via chave/agent ou sessão compartilhada.', flush=True)
     try:

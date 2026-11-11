@@ -1,6 +1,6 @@
 # NETWIN Observer
 
-Painel local de consulta para o NETWINUSA. Sem dependências Python externas e sem instalação nas VMs. Requer macOS, Python 3.9+ e OpenSSH (`python3 --version`, `ssh -V`). Se Python não existir, instale a distribuição oficial de python.org.
+Painel local de consulta para o NETWINUSA. Sem dependências Python externas. A leitura do journal usa a permissão sudo já existente, sem instalar arquivos ou alterar a VM. Requer macOS, Python 3.9+ e OpenSSH (`python3 --version`, `ssh -V`). Se Python não existir, instale a distribuição oficial de python.org.
 
 ## Iniciar no Mac
 
@@ -18,7 +18,7 @@ Porta alternativa: `sh start.command --port 8766`.
 - Inventário DEV de backend, frontend, GeoServer, Oracle e Docmanager conforme a documentação consultada.
 - CPU por diferença de /proc/stat, memória por /proc/meminfo, uso de disco raiz e uptime.
 - Backend com as seis unidades systemd confirmadas; estado, subestado e MainPID. `active (exited)` é exibido como tal, sem declarar saúde do processo Java.
-- Journal: últimas 150 linhas dos últimos 30 minutos, filtro local e atualização periódica. Logs em arquivo ainda não integrados. Sem sudo: journal restrito pode mostrar aviso ou conteúdo parcial. Nesse caso use o Terminal conforme as permissões existentes; o app não altera grupos ou sudoers.
+- Journal: últimas 150 linhas dos últimos 30 minutos, filtro local e atualização periódica. Logs em arquivo ainda não integrados. A consulta usa `sudo -n /usr/bin/journalctl`, sem solicitar senha. Usa a autorização sudo já existente para o usuário SSH; o app não altera grupos ou sudoers.
 - Métricas existentes via SSH: JBoss 8890, JVM 8891 ainda sem identificação funcional confirmada, exportador Nginx 9113. `nginx_up 0` é falha de coleta, não falha do Nginx. Não altera a configuração do exportador.
 - Gráficos CPU/heap em memória no navegador, até 40 pontos. Sem armazenamento histórico permanente e sem alertas.
 - Frontend, GeoServer e Docmanager descobrem serviços reais por SSH; endpoints de métricas adicionais precisam ser confirmados.
@@ -31,7 +31,7 @@ Edite `hosts.json` localmente e reinicie o app. Cada chave identifica um host. C
 
 ## Limites e proteção
 
-Servidor apenas em 127.0.0.1, com validação Host/Origin e token por execução. Não habilite encaminhamento público para o painel. Usa SSH com BatchMode e verificação estrita de host, sem shells locais para comandos remotos. Comandos remotos são consultas fixas, serviços e destinos vêm de configuração local confiável. A API não oferece execução arbitrária, edição, start/stop/restart ou sudo. O shell interativo de connect.command é o SSH habitual do usuário, fora da interface do app.
+Servidor apenas em 127.0.0.1, com validação Host/Origin e token por execução. Não habilite encaminhamento público para o painel. Usa SSH com BatchMode e verificação estrita de host, sem shells locais para comandos remotos. Comandos remotos são consultas fixas, serviços e destinos vêm de configuração local confiável. A API não oferece execução arbitrária, edição ou start/stop/restart. Apenas a consulta fixa de journal usa sudo não interativo. O shell interativo de connect.command é o SSH habitual do usuário, fora da interface do app.
 
 Consultas SSH têm timeout e limite de concorrência; falhas de VPN e autenticação são apresentadas. Não há confirmação funcional de endpoints de negócio, MongoDB, ZooKeeper ou Oracle. Métricas JVM não garantem que os serviços de negócio estejam saudáveis. Sem conexão a Prometheus/Grafana corporativo.
 
@@ -69,3 +69,46 @@ Destinos confirmados do backend: debug JBoss 8787→18787, métricas JBoss 8890�
 Frontend/GeoServer não recebem portas de debug presumidas. Adicione portas confirmadas no campo forwards do host em hosts.json (label, localPort, remotePort, kind; path opcional para HTTP). Reinicie o app após mudar configuração.
 
 O controle usa `ssh -O forward/cancel` na sessão compartilhada existente. Não pede senhas pelo navegador. Fechar a aba do navegador não fecha os túneis: use Encerrar túnel ou Ctrl+C no servidor para encerrar os encaminhamentos que ele criou. Encerrar a sessão SSH também os remove. Se matar o processo do app de forma forçada, feche a sessão SSH para remover encaminhamentos remanescentes. Abrir debug permite que o IntelliJ suspenda threads: use com atenção no DEV compartilhado, preferindo Suspend: Thread.
+
+## Permissão para leitura do journal
+
+O Observer executa por SSH, como o usuário configurado no host:
+
+```sh
+sudo -n /usr/bin/journalctl -u netwin_backend.service -n 150 --since=-30min --no-pager -o short-iso
+```
+
+Se esse comando funcionar como `padmin`, a permissão existente é suficiente.
+Não é necessário instalar arquivos, alterar grupos ou editar sudoers na VM.
+O Observer executa a mesma consulta fixa usando a conexão SSH autenticada.
+
+O `-n` impede solicitações de senha. Se a autorização existente não permitir a
+consulta (ou depender de uma credencial sudo que expirou), o painel exibe o erro.
+Executar `sudo su` em outro shell não transfere privilégios ao Observer.
+
+Reinicie o Observer após atualizar o código e mantenha a conexão SSH aberta.
+
+## Logs em tempo real
+
+Na aba **Logs**, selecione o serviço e marque **Tempo real**. O painel consulta
+as últimas 150 linhas dos últimos 30 minutos e acompanha novas mensagens com
+`sudo -n /usr/bin/journalctl ... --follow`, usando a autorização já existente.
+Não instala arquivos nem altera a VM. Essa autorização também precisa permitir
+`--follow`; a permissão para uma consulta pontual pode não cobrir esse argumento.
+
+Desmarque para voltar à consulta pontual. A rolagem automática pode ser desligada
+para ler mensagens anteriores. O buffer do painel permite manter as últimas 50, 100 ou 200 linhas (padrão), ou todas as linhas recebidas;
+o filtro continua funcionando. Trocar de serviço, máquina ou aba encerra o
+acompanhamento anterior. Ao retornar à aba, a opção marcada inicia nova consulta.
+Fechar a página encerra a conexão. São permitidos até quatro acompanhamentos
+simultâneos; o acompanhamento não depende da atualização geral a cada 15 segundos.
+Se a conexão cair, o painel informa a interrupção; marque Tempo real novamente
+para reconectar.
+
+Em **Manter linhas**, reduzir o limite descarta as linhas mais antigas do buffer.
+**Todas** mantém tudo que chegar a partir da seleção, até limpar a tela ou iniciar
+outra consulta; não recupera linhas já descartadas nem todo o histórico da VM.
+A carga inicial continua limitada a 150 linhas dos últimos 30 minutos.
+**Copiar logs** copia o conteúdo mantido no frontend que corresponde ao filtro atual,
+sem incluir mensagens de status. **Limpar tela** esvazia esse buffer e mantém o
+tempo real ativo.

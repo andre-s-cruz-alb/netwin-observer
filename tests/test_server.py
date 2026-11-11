@@ -1,6 +1,8 @@
 import importlib.util
 from pathlib import Path
 import subprocess
+import io
+import json
 import unittest
 from unittest.mock import patch
 
@@ -61,6 +63,60 @@ class ObserverTests(unittest.TestCase):
         with patch.object(m,'remote',return_value='tomcat.service enabled\n') as call:
             with self.assertRaises(ValueError): m.logs(h,'sshd.service')
             self.assertEqual(call.call_count,1)
+
+    def test_logs_use_noninteractive_sudo_and_preserve_output(self):
+        with patch.object(m, 'remote', return_value='backend log\n') as call:
+            result = m.logs(H, 'netwin_backend.service')
+        self.assertEqual(result['text'], 'backend log\n')
+        call.assert_called_once_with(H, 'sudo -n /usr/bin/journalctl -u netwin_backend.service -n 150 --since=-30min --no-pager -o short-iso')
+
+    def test_logs_sudo_denial_is_reported_without_fallback(self):
+        denied = subprocess.CompletedProcess('ssh', 1, '', 'sudo: a password is required')
+        with patch.object(m.subprocess, 'run', return_value=denied) as call:
+            with self.assertRaisesRegex(RuntimeError, 'password is required'):
+                m.logs(H, 'netwin_backend.service')
+            self.assertEqual(call.call_count, 1)
+
+    def stream_handler(self):
+        handler = object.__new__(m.Handler)
+        handler.wfile = io.BytesIO()
+        handler.send_response = lambda *args: None
+        handler.send_header = lambda *args: None
+        handler.end_headers = lambda: None
+        return handler
+
+    def test_stream_rejects_unapproved_service_before_starting_ssh(self):
+        with patch.object(m.subprocess, 'Popen') as spawn:
+            with self.assertRaises(ValueError):
+                self.stream_handler().stream_logs(H, 'sshd.service')
+            spawn.assert_not_called()
+
+    def test_stream_delivers_output_and_cleans_up(self):
+        handler = self.stream_handler()
+        with patch.object(m.subprocess, 'Popen') as spawn, patch.object(m.select, 'select', return_value=([1], [], [])), patch.object(m.os, 'read', side_effect=['ação\n'.encode(), b'']):
+            process = spawn.return_value
+            process.wait.return_value = 1
+            process.poll.return_value = 1
+            handler.stream_logs(H, 'netwin_backend.service')
+            self.assertTrue(spawn.call_args.args[0][-1].endswith('--follow'))
+            events = [json.loads(line) for line in handler.wfile.getvalue().splitlines()]
+            self.assertEqual(events[0], {'text': 'ação\n'})
+            self.assertIn('error', events[1])
+            process.stdout.close.assert_called_once()
+
+    def test_stream_disconnect_terminates_ssh_and_releases_slot(self):
+        handler = self.stream_handler()
+        class Disconnected:
+            def write(self, data):
+                raise BrokenPipeError()
+        handler.wfile = Disconnected()
+        with patch.object(m.subprocess, 'Popen') as spawn, patch.object(m.select, 'select', return_value=([], [], [])), patch.object(m, 'STREAM_LOCK') as lock:
+            process = spawn.return_value
+            process.poll.return_value = None
+            handler.stream_logs(H, 'netwin_backend.service')
+            process.terminate.assert_called_once()
+            process.wait.assert_called_once_with(timeout=3)
+            lock.release.assert_called_once()
 
     def test_snapshot_preserves_exited_state(self):
         raw='\n@@IDENTITY\ncore\nup 1 day\n@@CPU\ncpu 10 2 3 40 5 0 0 0\n@@MEMORY\nMemTotal: 1000 kB\nMemAvailable: 400 kB\n@@DISK\nFilesystem 1024-blocks Used Available Capacity Mounted on\n/dev/sda 100 20 80 20% /\n@@SERVICES\nId=netwin-jboss.service\nActiveState=active\nSubState=exited\nMainPID=0\n\nId=netwin_backend.service\nActiveState=active\nSubState=running\nMainPID=123\n@@END\n'
